@@ -48,7 +48,7 @@
       }
       if (sh !== -3) {
         for (let d = 0; d < D; d++) for (let p = 0; p + l.len <= N; p++) {
-          let good = true;
+          let good = !l.dayOK || !!l.dayOK[d]; // kurs dersleri yalnız kurs günlerine, ötekiler ders günlerine
           for (let k = 0; k < l.len && good; k++) {
             const pp = P.periods[p + k], s = d * N + p + k;
             if (sh >= 0 && pp.shift !== sh) good = false;

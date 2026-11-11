@@ -24,7 +24,7 @@ const trSort = (a, b) => a.name.localeCompare(b.name, 'tr', { numeric: true });
 
 function mkShifts(type) { return PRESETS[type].shifts.map(s => Object.assign({ id: uid() }, s)); }
 function blank(type) {
-  return { v: 1, school: { name: '', year: '2026-2027', type, days: [0, 1, 2, 3, 4], shifts: mkShifts(type) }, subjects: [], teachers: [], classes: [], rooms: [], assignments: [], placements: {}, updated: null };
+  return { v: 1, school: { name: '', year: '2026-2027', type, days: [0, 1, 2, 3, 4], courseDays: [], shifts: mkShifts(type) }, subjects: [], teachers: [], classes: [], rooms: [], assignments: [], placements: {}, updated: null };
 }
 function migrate(s) {
   const b = blank('tamgun');
@@ -64,6 +64,13 @@ function periods() {
   });
   return out;
 }
+// Kurs günleri: ders günlerinden ayrı tutulur; kurs dersleri yalnız bu günlere, normal dersler yalnız ders günlerine konur.
+const cDays = () => S.school.courseDays || [];
+const allDays = () => S.school.days.concat(cDays()).sort((a, b) => a - b);
+const isCDay = d => cDays().includes(d);
+const cDelta = si => { const sh = S.school.shifts[si]; return sh && sh.courseStart ? toMin(sh.courseStart) - toMin(sh.start) : 0; };
+/** Ders saatinin o gündeki saat aralığı; kurs günlerinde devrenin kurs başlangıcına göre kayar. */
+const tOf = (p, d) => { const x = isCDay(d) ? cDelta(p.si) : 0; return fmt(p.start + x) + '–' + fmt(p.end + x); };
 function parseBlocks(a) {
   const h = +a.hours || 0;
   const b = String(a.blocks || '').split('+').map(x => parseInt(x, 10)).filter(x => x > 0);
@@ -108,6 +115,7 @@ function checkPlace(u, d, p, occ, P) {
   const sb = staticBad(u, p, P);
   if (sb) return sb;
   const a = u.a;
+  if (isCDay(d) !== !!a.kurs) return a.kurs ? 'Kurs dersleri yalnızca kurs günlerine konur.' : 'Bu gün kurs günü; normal dersler buraya konmaz.';
   for (let k = 0; k < u.len; k++) {
     const key = d + '-' + (p + k);
     for (const [n, m, ids] of [['classes', occ.c, a.classIds], ['teachers', occ.t, a.teacherIds], ['rooms', occ.r, a.roomId ? [a.roomId] : []]]) {
@@ -136,7 +144,7 @@ function prune() {
   for (const u of units()) us[u.key] = u;
   for (const k in S.placements) {
     const u = us[k], pl = S.placements[k];
-    if (!u || !S.school.days.includes(pl.d) || staticBad(u, pl.p, P)) delete S.placements[k];
+    if (!u || !allDays().includes(pl.d) || isCDay(pl.d) !== !!u.a.kurs || staticBad(u, pl.p, P)) delete S.placements[k];
   }
 }
 /** Devre yapısı değişince yerleşimleri ve kapalı saatleri yeni ders saati numaralarına taşır. */
@@ -151,8 +159,9 @@ function withShiftChange(fn) {
     e.un = un;
   }
 }
-const hoursOf = (field, id) => sum(S.assignments.filter(a => field === 'roomId' ? a.roomId === id : a[field].includes(id)).map(a => +a.hours || 0));
-const capacity = c => { const sh = get('shifts', c.shiftId); return sh ? sh.periods * S.school.days.length : 0; };
+/** kurs: true yalnız kurs dersleri, false yalnız normal dersler, verilmezse hepsi. */
+const hoursOf = (field, id, kurs) => sum(S.assignments.filter(a => (kurs == null || !!a.kurs === kurs) && (field === 'roomId' ? a.roomId === id : a[field].includes(id))).map(a => +a.hours || 0));
+const capacity = (c, kurs) => { const sh = get('shifts', c.shiftId); return sh ? sh.periods * (kurs ? cDays().length : S.school.days.length) : 0; };
 function dropPlacements(aid) { for (const k in S.placements) if (k.startsWith(aid + ':')) delete S.placements[k]; }
 
 function commit(rerender = true, clean = false) {
@@ -183,7 +192,12 @@ function warnings() {
     if (a.length && b.length && a[0].start < b[b.length - 1].end && b[0].start < a[a.length - 1].end)
       w.push(`"${sh[i].name}" ve "${sh[j].name}" devrelerinin saatleri çakışıyor; iki devrede dersi olan öğretmen aynı anda iki yerde görünebilir.`);
   }
-  for (const c of S.classes) { const h = hoursOf('classIds', c.id), cap = capacity(c); if (h > cap) w.push(`${c.name}: haftalık ${h} saat ders var, programda ${cap} saatlik yer var.`); }
+  for (const c of S.classes) {
+    const h = hoursOf('classIds', c.id, false), cap = capacity(c), hk = hoursOf('classIds', c.id, true), capk = capacity(c, true);
+    if (h > cap) w.push(`${c.name}: haftalık ${h} saat ders var, programda ${cap} saatlik yer var.`);
+    if (hk > capk && cDays().length) w.push(`${c.name}: ${hk} saat kurs dersi var, kurs günlerinde ${capk} saatlik yer var.`);
+  }
+  if (!cDays().length && S.assignments.some(a => a.kurs)) w.push('Kurs dersi tanımlı ama kurs günü seçilmemiş; Okul adımından kurs günü seçin.');
   const nt = S.assignments.filter(a => !a.teacherIds.length).length;
   if (nt) w.push(`${nt} derse öğretmen atanmamış.`);
   return w;
@@ -206,7 +220,7 @@ const needsBackup = () => hasData() && (S.dirty || !S.lastBackup);
 function stepState() {
   const us = units(), total = sum(us.map(u => u.len)), placed = sum(us.filter(u => S.placements[u.key]).map(u => u.len)), P = periods();
   return {
-    okul: { done: !!S.school.name, txt: `${S.school.shifts.length} devre, günde ${P.length} ders saati, haftada ${S.school.days.length} gün`, miss: 'Okul adını yazın.' },
+    okul: { done: !!S.school.name, txt: `${S.school.shifts.length} devre, günde ${P.length} ders saati, haftada ${S.school.days.length} gün${cDays().length ? ' + ' + cDays().length + ' kurs günü' : ''}`, miss: 'Okul adını yazın.' },
     dersler: { done: S.subjects.some(x => x.name), txt: S.subjects.length + ' ders tanımlı', miss: 'En az bir ders ekleyin.' },
     ogretmenler: { done: S.teachers.some(x => x.name), txt: S.teachers.length + ' öğretmen tanımlı', miss: 'En az bir öğretmen ekleyin.' },
     siniflar: { done: S.classes.some(x => x.name), txt: S.classes.length + ' sınıf tanımlı', miss: 'En az bir sınıf ekleyin.' },
@@ -268,7 +282,8 @@ function zil() {
     const ps = P.filter(p => p.shiftId === sh.id);
     return `<div><b>${esc(sh.name)}</b><ol>${ps.map((p, i) => (p.lunchBefore ? `<li class="lunch">Öğle arası <span data-lt="${p.idx}">${fmt(ps[i - 1].end)}–${fmt(p.start)}</span></li>`
       : i ? `<li class="brk">teneffüs <span><input type="number" min="0" data-brk="${sh.id}:${i}" value="${breakOf(sh, i)}" class="${sh.breaks && sh.breaks[i] != null ? 'own' : ''}" aria-label="${i}. dersten sonraki teneffüs, dakika"> dk</span></li>` : '')
-      + `<li>${p.no}. ders <span data-pt="${p.idx}">${fmt(p.start)}–${fmt(p.end)}</span></li>`).join('')}</ol></div>`;
+      + `<li>${p.no}. ders <span data-pt="${p.idx}">${fmt(p.start)}–${fmt(p.end)}</span></li>`).join('')}</ol>
+      ${cDays().length && ps.length ? `<p class="ctime">Kurs günlerinde ${fmt(ps[0].start + cDelta(ps[0].si))}–${fmt(ps[ps.length - 1].end + cDelta(ps[0].si))}</p>` : ''}</div>`;
   }).join('')}</div>` + warnBox();
 }
 /** Zil çizelgesindeki saatleri, kutuları yeniden çizmeden günceller (yazarken odak kaybolmasın). */
@@ -289,13 +304,16 @@ function vOkul() {
     <label>Öğretim yılı<input data-chg="year" value="${esc(sc.year)}" style="width:120px"></label></div></section>
   <section class="panel"><h2>Öğretim şekli</h2><p class="hint">Okulunuza en yakın şablonu seçin; saatleri aşağıdan değiştirebilirsiniz.</p>
     <div class="presets">${Object.entries(PRESETS).map(([k, p]) => `<button class="preset ${sc.type === k ? 'on' : ''}" data-act="preset" data-type="${k}"><b>${p.label}</b><span>${p.desc}</span></button>`).join('')}</div></section>
-  <section class="panel"><h2>Ders günleri</h2><div class="row">${DAYS.map((d, i) => `<label class="chk"><input type="checkbox" data-day="${i}" ${sc.days.includes(i) ? 'checked' : ''}>${d}</label>`).join('')}</div></section>
+  <section class="panel"><h2>Ders günleri</h2><div class="row">${DAYS.map((d, i) => `<label class="chk"><input type="checkbox" data-day="${i}" ${sc.days.includes(i) ? 'checked' : ''}>${d}</label>`).join('')}</div>
+    <h4>Kurs günleri <small>isteğe bağlı</small></h4><div class="row">${DAYS.map((d, i) => `<label class="chk"><input type="checkbox" data-day="${i}" data-kind="c" ${isCDay(i) ? 'checked' : ''}>${d}</label>`).join('')}</div>
+    <p class="hint">Kurs günlerine yalnızca Ders Dağıtımı'nda "Kurs dersi" olarak işaretlenen dersler yerleşir; normal dersler bu günlere konmaz. Bir gün ya ders günü ya kurs günü olabilir. Kursun başlangıç saatini aşağıdaki "Kurs başlangıcı" alanından değiştirebilirsiniz.</p></section>
   <section class="panel"><h2>Devreler ve ders saatleri</h2>
     <p class="hint">Öğle arası istemiyorsanız "kaçıncı dersten sonra" alanına 0 yazın. Sınıflar bir devreye bağlanır; öğretmenler bütün devrelerde ders verebilir.</p>
-    <table class="tbl"><tr><th>Devre adı</th><th>Başlangıç</th><th>Ders sayısı</th><th>Ders (dk)</th><th>Teneffüs (dk)</th><th>Öğle arası: kaçıncı dersten sonra</th><th>Öğle arası (dk)</th><th></th></tr>
+    <table class="tbl"><tr><th>Devre adı</th><th>Başlangıç</th><th>Ders sayısı</th><th>Ders (dk)</th><th>Teneffüs (dk)</th><th>Öğle arası: kaçıncı dersten sonra</th><th>Öğle arası (dk)</th><th title="Boş bırakılırsa kurs günlerinde de aynı saatte başlar">Kurs başlangıcı</th><th></th></tr>
     ${sc.shifts.map(s => `<tr><td><input data-coll="shifts" data-id="${s.id}" data-f="name" value="${esc(s.name)}"></td>
       <td><input type="time" data-coll="shifts" data-id="${s.id}" data-f="start" value="${esc(s.start)}"></td>
       ${num(s, 'periods', 1)}${num(s, 'lessonMin', 10)}${num(s, 'breakMin', 0)}${num(s, 'lunchAfter', 0, 90)}${num(s, 'lunchMin', 0)}
+      <td><input type="time" data-coll="shifts" data-id="${s.id}" data-f="courseStart" value="${esc(s.courseStart || '')}"></td>
       <td>${sc.shifts.length > 1 ? `<button class="x" data-act="delShift" data-id="${s.id}" title="Devreyi sil">✕</button>` : ''}</td></tr>`).join('')}</table>
     <button data-act="addShift">+ Devre ekle</button>
     <h4>Zil çizelgesi</h4><p class="hint">Bir teneffüsü ötekilerden uzun ya da kısa yapmak için aşağıdaki kutuya süresini yazın; değiştirdikleriniz koyu çerçeveli görünür. Kutuyu boşaltırsanız yukarıdaki genel teneffüs süresine döner.</p>
@@ -320,7 +338,7 @@ const vOgretmenler = () => crud('teachers', 'Öğretmenler', 'Günlük en çok s
     { label: 'Kapalı saatler', cell: unBtn('teachers') }, { label: 'Haftalık yük', cell: o => hoursOf('teacherIds', o.id) + ' saat' }], 'Öğretmen ekle');
 const vSiniflar = () => crud('classes', 'Sınıflar', 'İkili öğretimde her sınıfın devresini seçin.',
   [{ f: 'name', label: 'Sınıf / şube', w: 120, ph: '5/A' }, { f: 'shiftId', label: 'Devre', type: 'select', opts: () => S.school.shifts.map(s => [s.id, s.name]) },
-    { label: 'Kapalı saatler', cell: unBtn('classes') }, { label: 'Haftalık ders', cell: o => { const h = hoursOf('classIds', o.id), c = capacity(o); return `<span class="${h > c ? 'over' : ''}">${h} / ${c} saat</span>`; } }], 'Sınıf ekle');
+    { label: 'Kapalı saatler', cell: unBtn('classes') }, { label: 'Haftalık ders', cell: o => { const h = hoursOf('classIds', o.id, false), c = capacity(o), hk = hoursOf('classIds', o.id, true); return `<span class="${h > c ? 'over' : ''}">${h} / ${c} saat</span>${hk ? ` + ${hk} saat kurs` : ''}`; } }], 'Sınıf ekle');
 const vDerslikler = () => crud('rooms', 'Derslikler', 'Yalnızca paylaşılan özel yerleri girin (laboratuvar, spor salonu, atölye). Her sınıfın kendi dersliği için kayıt gerekmez.',
   [{ f: 'name', label: 'Derslik adı', w: 220 }, { label: 'Kapalı saatler', cell: unBtn('rooms') }, { label: 'Haftalık kullanım', cell: o => hoursOf('roomId', o.id) + ' saat' }], 'Derslik ekle');
 
@@ -335,7 +353,7 @@ function vDagitim() {
   <button class="primary" data-act="asg">+ Ders ekle</button></div>
   ${list.length ? `<div class="scroll"><table class="tbl lines"><tr><th>Sınıf</th><th>Ders</th><th>Öğretmen</th><th>Saat</th><th>Dağılım</th><th>Derslik</th><th>Yerleşen</th><th></th></tr>
   ${list.map(a => { const bl = parseBlocks(a), pl = sum(bl.filter((b, k) => S.placements[a.id + ':' + k])); const sub = get('subjects', a.subjectId);
-    return `<tr><td>${esc(names('classes', a.classIds, true))}</td><td><span class="dot" style="background:${sub ? sub.color : '#ccc'}"></span>${esc(sub ? sub.name : '?')}</td>
+    return `<tr><td>${esc(names('classes', a.classIds, true))}</td><td><span class="dot" style="background:${sub ? sub.color : '#ccc'}"></span>${esc(sub ? sub.name : '?')}${a.kurs ? ' <span class="tag">kurs</span>' : ''}</td>
     <td>${a.teacherIds.length ? esc(names('teachers', a.teacherIds, true)) : '<span class="over">atanmadı</span>'}</td><td>${a.hours}</td><td>${bl.join('+')}</td><td>${a.roomId ? esc(names('rooms', [a.roomId], true)) : ''}</td><td>${pl}/${a.hours}</td>
     <td class="nowrap"><button data-act="asg" data-id="${a.id}">Düzenle</button> <button class="x" data-act="delAsg" data-id="${a.id}" title="Sil">✕</button></td></tr>`; }).join('')}</table></div>` : '<p class="empty">Bu görünümde ders yok.</p>'}
   ${warnBox()}</section>`;
@@ -344,8 +362,9 @@ function vDagitim() {
 function card(u, style) {
   const a = u.a, sub = get('subjects', a.subjectId), pl = S.placements[u.key];
   const cls = names('classes', a.classIds, true), tch = names('teachers', a.teacherIds), room = a.roomId ? nm(get('rooms', a.roomId)) : '';
-  const l2 = (ui.view === 'c' ? tch : ui.view === 't' ? cls : cls + ' · ' + tch) + (room && ui.view !== 'r' ? ' · ' + room : '');
-  const tip = `${sub ? sub.name : '?'} — ${cls} — ${names('teachers', a.teacherIds, true)}${room ? ' — ' + room : ''} (${u.len} saat)`;
+  const kp = pl && isCDay(pl.d) ? periods()[pl.p] : null; // kurs günündeki kutuda başlangıç saati de görünsün
+  const l2 = (a.kurs ? 'Kurs ' + (kp && cDelta(kp.si) ? tOf(kp, pl.d).split('–')[0] + ' ' : '') + '· ' : '') + (ui.view === 'c' ? tch : ui.view === 't' ? cls : cls + ' · ' + tch) + (room && ui.view !== 'r' ? ' · ' + room : '');
+  const tip = `${sub ? sub.name : '?'}${a.kurs ? ' (kurs)' : ''} — ${cls} — ${names('teachers', a.teacherIds, true)}${room ? ' — ' + room : ''} (${u.len} saat)`;
   return `<div class="card ${pl && pl.locked ? 'locked' : ''} ${ui.sel === u.key ? 'sel' : ''}" draggable="true" data-u="${u.key}" style="background:${sub ? sub.color : '#e5e7eb'};${style || ''}" title="${esc(tip)}">
     <b>${esc(nm(sub))}</b><span>${esc(l2)}</span>${pl ? `<i data-act="lock" title="Kilitle / kilidi aç">${pl.locked ? '🔒' : '🔓'}</i><i class="rm" data-act="unplace" title="Programdan çıkar">✕</i>` : `<em>${u.len} saat</em>`}</div>`;
 }
@@ -362,15 +381,15 @@ function vProgram() {
     <select id="svTime" title="Yerleştirme süresi"><option value="1500">Hızlı</option><option value="5000" selected>Normal</option><option value="20000">Titiz</option></select>
     <button class="primary" data-act="solve" data-mode="all">Otomatik yerleştir</button><button data-act="solve" data-mode="fill">Kalanları yerleştir</button><button data-act="clearSched">Temizle</button></div>${warnBox()}`;
   if (!ent) return h + `<section class="panel"><p class="empty">Bu görünümde gösterilecek kayıt yok. Önce tanımları ve ders dağıtımını girin.</p></section>`;
-  const P = periods(), vis = ui.view === 'c' ? P.filter(p => p.shiftId === ent.shiftId) : P, days = S.school.days;
+  const P = periods(), vis = ui.view === 'c' ? P.filter(p => p.shiftId === ent.shiftId) : P, days = allDays();
   const mine = entUnits(us, ui.view, ent.id), rowOf = {};
-  let r = 1, g = `<div class="grid" style="grid-template-columns:84px repeat(${days.length},minmax(96px,1fr))"><div class="gh" style="grid-row:1;grid-column:1"></div>` + days.map((d, i) => `<div class="gh" style="grid-row:1;grid-column:${i + 2}">${DAYS[d]}</div>`).join('');
+  let r = 1, g = `<div class="grid" style="grid-template-columns:84px repeat(${days.length},minmax(96px,1fr))"><div class="gh" style="grid-row:1;grid-column:1"></div>` + days.map((d, i) => `<div class="gh ${isCDay(d) ? 'kd' : ''}" style="grid-row:1;grid-column:${i + 2}">${DAYS[d]}${isCDay(d) ? ' <small>kurs</small>' : ''}</div>`).join('');
   vis.forEach((p, i) => {
     const prev = vis[i - 1];
     if (prev && (p.shiftId !== prev.shiftId || p.lunchBefore)) { r++; g += `<div class="sep" style="grid-row:${r};grid-column:1/-1">${p.shiftId !== prev.shiftId ? esc(get('shifts', p.shiftId).name) + ' devresi' : 'Öğle arası ' + fmt(prev.end) + '–' + fmt(p.start)}</div>`; }
     r++; rowOf[p.idx] = r;
     g += `<div class="gt" style="grid-row:${r};grid-column:1"><b>${p.no}</b><small>${fmt(p.start)}–${fmt(p.end)}</small></div>`;
-    days.forEach((d, ci) => { g += `<div class="cell ${ent.un && ent.un[d + '-' + p.idx] ? 'off' : ''}" data-d="${d}" data-p="${p.idx}" style="grid-row:${r};grid-column:${ci + 2}"></div>`; });
+    days.forEach((d, ci) => { g += `<div class="cell ${ent.un && ent.un[d + '-' + p.idx] ? 'off' : ''} ${isCDay(d) ? 'kd' : ''}" data-d="${d}" data-p="${p.idx}" style="grid-row:${r};grid-column:${ci + 2}">${isCDay(d) && cDelta(p.si) ? `<small>${tOf(p, d)}</small>` : ''}</div>`; });
   });
   let hrs = 0; const perDay = {};
   for (const u of mine) {
@@ -412,7 +431,8 @@ function placeUnit(key, d, p) {
 
 // ---------- otomatik yerleştirme ----------
 function buildProblem(mode) {
-  const P = periods(), days = S.school.days, D = days.length, N = P.length;
+  const P = periods(), days = allDays(), D = days.length, N = P.length;
+  const okN = Uint8Array.from(days, d => isCDay(d) ? 0 : 1), okK = Uint8Array.from(days, d => isCDay(d) ? 1 : 0);
   const ix = l => { const m = {}; l.forEach((x, i) => { m[x.id] = i; }); return m; };
   const cI = ix(S.classes), tI = ix(S.teachers), rI = ix(S.rooms), aI = ix(S.assignments), sI = ix(S.school.shifts);
   const un = o => { const a = new Uint8Array(D * N); for (const k in (o.un || {})) { const [d, p] = k.split('-'); const di = days.indexOf(+d); if (di >= 0 && +p < N) a[di * N + +p] = 1; } return a; };
@@ -425,7 +445,7 @@ function buildProblem(mode) {
       rooms: S.rooms.map(r => ({ un: un(r) })),
       lessons: us.map(u => {
         const pl = S.placements[u.key], keep = pl && (mode === 'fill' || pl.locked);
-        return { assign: aI[u.a.id], classes: u.a.classIds.map(id => cI[id]).filter(x => x != null), teachers: u.a.teacherIds.map(id => tI[id]).filter(x => x != null), room: u.a.roomId && rI[u.a.roomId] != null ? rI[u.a.roomId] : -1, len: u.len, fixed: keep ? days.indexOf(pl.d) * N + pl.p : -1 };
+        return { assign: aI[u.a.id], classes: u.a.classIds.map(id => cI[id]).filter(x => x != null), teachers: u.a.teacherIds.map(id => tI[id]).filter(x => x != null), room: u.a.roomId && rI[u.a.roomId] != null ? rI[u.a.roomId] : -1, len: u.len, dayOK: u.a.kurs ? okK : okN, fixed: keep ? days.indexOf(pl.d) * N + pl.p : -1 };
       }),
     },
   };
@@ -441,7 +461,7 @@ function runSolver(mode) {
     $('#busyText').textContent = pr.phase === 'construct' ? `Dersler yerleştiriliyor… ${pr.placed} / ${pr.total} saat (deneme ${pr.attempt})` : `Boş saatler azaltılıyor… %${Math.round(pr.frac * 100)}`;
     if (ui.stop && !sv.done) sv.finish();
     if (!sv.done) { setTimeout(tick, 0); return; }
-    const res = sv.result(), days = S.school.days, np = {};
+    const res = sv.result(), days = allDays(), np = {};
     res.pos.forEach((s, i) => { if (s >= 0) { const o = S.placements[us[i].key]; np[us[i].key] = { d: days[(s / N) | 0], p: s % N, locked: !!(o && o.locked) }; } });
     S.placements = np; busy.hidden = true; commit();
     const left = sum(res.unplaced.map(i => us[i].len));
@@ -452,7 +472,7 @@ function runSolver(mode) {
 
 // ---------- çıktı ----------
 function entTable(view, ent, occ, P) {
-  const vis = view === 'c' ? P.filter(p => p.shiftId === ent.shiftId) : P, days = S.school.days, o = occ[view][ent.id] || {};
+  const vis = view === 'c' ? P.filter(p => p.shiftId === ent.shiftId) : P, days = allDays(), o = occ[view][ent.id] || {};
   let hrs = 0, rows = '';
   vis.forEach((p, i) => {
     const prev = vis[i - 1];
@@ -461,18 +481,18 @@ function entTable(view, ent, occ, P) {
       const u = o[d + '-' + p.idx]; if (!u) return '<td></td>';
       hrs++; const a = u.a, sub = get('subjects', a.subjectId), room = a.roomId ? ' · ' + nm(get('rooms', a.roomId)) : '';
       const l2 = view === 'c' ? names('teachers', a.teacherIds, true) : view === 't' ? names('classes', a.classIds, true) : names('classes', a.classIds, true) + ' · ' + names('teachers', a.teacherIds);
-      return `<td style="background:${sub ? sub.color : '#eee'}"><b>${esc(sub ? sub.name : '?')}</b><small>${esc(l2 + (view === 'r' ? '' : room))}</small></td>`;
+      return `<td style="background:${sub ? sub.color : '#eee'}"><b>${esc(sub ? sub.name : '?')}</b><small>${esc(l2 + (view === 'r' ? '' : room))}</small>${isCDay(d) && cDelta(p.si) ? `<small>${tOf(p, d)}</small>` : ''}</td>`;
     }).join('')}</tr>`;
   });
   const kind = view === 'c' ? 'Sınıfı' : view === 't' ? '' : 'Dersliği';
   return `<section class="page"><h3>${esc(S.school.name)} ${esc(S.school.year)} · ${esc(ent.name)} ${kind} Haftalık Ders Programı <small>${hrs} saat</small></h3>
-    <table class="pt"><tr><th></th>${days.map(d => `<th>${DAYS[d]}</th>`).join('')}</tr>${rows}</table></section>`;
+    <table class="pt"><tr><th></th>${days.map(d => `<th>${DAYS[d]}${isCDay(d) ? ' (kurs)' : ''}</th>`).join('')}</tr>${rows}</table></section>`;
 }
 function sheet(view, occ, P) {
-  const days = S.school.days, list = (view === 'tc' ? S.teachers : S.classes), k = view === 'tc' ? 't' : 'c';
+  const days = allDays(), list = (view === 'tc' ? S.teachers : S.classes), k = view === 'tc' ? 't' : 'c';
   const txt = u => view === 'tc' ? names('classes', u.a.classIds, true) : nm(get('subjects', u.a.subjectId)) + ' ' + names('teachers', u.a.teacherIds);
   const rows = list.map(e => [e.name].concat(days.flatMap(d => P.map(p => { const u = (occ[k][e.id] || {})[d + '-' + p.idx]; return u ? txt(u) : ''; }))));
-  return { head1: days.map(d => DAYS[d]), head2: days.flatMap(() => P.map(p => p.no)), rows, n: P.length };
+  return { head1: days.map(d => DAYS[d] + (isCDay(d) ? ' (kurs)' : '')), head2: days.flatMap(() => P.map(p => p.no)), rows, n: P.length };
 }
 function vCikti() {
   const occ = buildOcc(), P = periods();
@@ -495,8 +515,8 @@ function csvOut() {
   let rows;
   if (ui.out.length === 2) { const sh = sheet(ui.out, occ, P); rows = [[''].concat(sh.head1.flatMap(d => P.map(p => d + ' ' + p.no)))].concat(sh.rows); }
   else {
-    rows = [['Gün', 'Ders saati', 'Başlangıç', 'Bitiş', 'Sınıf', 'Ders', 'Öğretmen', 'Derslik']];
-    for (const u of units()) { const pl = S.placements[u.key]; if (!pl) continue; for (let k = 0; k < u.len; k++) { const p = P[pl.p + k]; rows.push([DAYS[pl.d], p.no, fmt(p.start), fmt(p.end), names('classes', u.a.classIds, true), (get('subjects', u.a.subjectId) || {}).name || '', names('teachers', u.a.teacherIds, true), u.a.roomId ? names('rooms', [u.a.roomId], true) : '']); } }
+    rows = [['Gün', 'Ders saati', 'Başlangıç', 'Bitiş', 'Sınıf', 'Ders', 'Öğretmen', 'Derslik', 'Tür']];
+    for (const u of units()) { const pl = S.placements[u.key]; if (!pl) continue; for (let k = 0; k < u.len; k++) { const p = P[pl.p + k], tt = tOf(p, pl.d).split('–'); rows.push([DAYS[pl.d], p.no, tt[0], tt[1], names('classes', u.a.classIds, true), (get('subjects', u.a.subjectId) || {}).name || '', names('teachers', u.a.teacherIds, true), u.a.roomId ? names('rooms', [u.a.roomId], true) : '', u.a.kurs ? 'Kurs' : 'Ders']); } }
     rows = [rows[0]].concat(rows.slice(1).sort((a, b) => DAYS.indexOf(a[0]) - DAYS.indexOf(b[0]) || String(a[4]).localeCompare(b[4], 'tr', { numeric: true }) || a[2].localeCompare(b[2])));
   }
   download('ders-programi.csv', '﻿' + rows.map(r => r.map(q).join(';')).join('\r\n'), 'text/csv;charset=utf-8');
@@ -570,7 +590,7 @@ function loadSample() {
 // ---------- pencereler ----------
 function openDlg(html) { const d = $('#dlg'); d.innerHTML = html; if (!d.open) d.showModal(); }
 function unDlg() {
-  const { coll: n, id } = ui.un, o = get(n, id), P = periods(), days = S.school.days;
+  const { coll: n, id } = ui.un, o = get(n, id), P = periods(), days = allDays();
   const vis = n === 'classes' ? P.filter(p => p.shiftId === o.shiftId) : P, multi = S.school.shifts.length > 1 && n !== 'classes';
   o.un = o.un || {};
   openDlg(`<h3>${esc(o.name)} — kapalı saatler</h3><p class="hint">Ders konulmayacak saatlere tıklayın. Gün ya da saat başlığına tıklamak bütün sütunu ya da satırı değiştirir.</p>
@@ -586,6 +606,7 @@ function asgDlg(id, keep) {
     <label>Haftalık saat<input type="number" name="hours" min="1" max="40" value="${a.hours}" style="width:80px"></label>
     <label>Dağılım<input name="blocks" value="${esc(a.blocks || '')}" placeholder="otomatik (ör. 2+2+1)" style="width:170px"></label>
     <label>Derslik<select name="room"><option value="">Kendi sınıfı</option>${S.rooms.map(r => `<option value="${r.id}" ${a.roomId === r.id ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label></div>
+    <label class="chk"><input type="checkbox" name="kurs" ${a.kurs ? 'checked' : ''}>Kurs dersi <small>yalnızca kurs günlerine yerleşir${cDays().length ? ' (' + cDays().map(d => DAYS[d]).join(', ') + ')' : '; kurs günü henüz seçilmedi, Okul adımından seçin'}</small></label>
     <h4>Sınıf <small>birden çok seçerseniz sınıflar bu derste birleşir</small></h4>${boxes('classes', a.classIds, 'cls')}
     <h4>Öğretmen <small>birden çok seçerseniz derse birlikte girerler</small></h4>${boxes('teachers', a.teacherIds, 'tch')}
     <div class="dlg-btns"><button type="button" data-act="dlgClose">Vazgeç</button>${id ? '' : '<button type="button" data-act="asgSave" data-again="1">Kaydet ve yeni</button>'}<button type="button" class="primary" data-act="asgSave">Kaydet</button></div></form>`);
@@ -650,7 +671,7 @@ const A = {
   asg(el) { asgDlg(el.dataset.id); },
   asgSave(el) {
     const f = $('#asgForm'), id = f.dataset.id, fd = new FormData(f);
-    const n = { subjectId: fd.get('subject'), classIds: fd.getAll('cls'), teacherIds: fd.getAll('tch'), hours: Math.max(1, parseInt(fd.get('hours'), 10) || 1), blocks: String(fd.get('blocks') || '').replace(/\s/g, ''), roomId: fd.get('room') || '' };
+    const n = { subjectId: fd.get('subject'), classIds: fd.getAll('cls'), teacherIds: fd.getAll('tch'), hours: Math.max(1, parseInt(fd.get('hours'), 10) || 1), blocks: String(fd.get('blocks') || '').replace(/\s/g, ''), roomId: fd.get('room') || '', kurs: !!fd.get('kurs') };
     if (!n.subjectId) { toast('Ders seçin.', true); return; }
     if (!n.classIds.length) { toast('En az bir sınıf seçin.', true); return; }
     if (n.blocks && sum(n.blocks.split('+').map(x => parseInt(x, 10) || 0)) !== n.hours) { toast('Dağılımın toplamı haftalık saate eşit olmalı (ör. 5 saat için 2+2+1).', true); return; }
@@ -727,10 +748,13 @@ document.addEventListener('change', e => {
     commit(false); refreshTimes();
   } else if (ds.chg) { S.school[ds.chg] = t.value.trim(); commit(false); }
   else if (ds.day != null) {
-    const d = +ds.day, s = new Set(S.school.days);
-    if (t.checked) s.add(d); else s.delete(d);
-    if (!s.size) { t.checked = true; toast('En az bir gün seçili olmalı.', true); return; }
-    S.school.days = Array.from(s).sort((a, b) => a - b); commit(false); $('#zil').innerHTML = zil();
+    const d = +ds.day, kurs = ds.kind === 'c';
+    const s = new Set(S.school.days), c = new Set(cDays());
+    const mine = kurs ? c : s, other = kurs ? s : c;
+    if (t.checked) { mine.add(d); other.delete(d); } else mine.delete(d);
+    if (!s.size) { toast('En az bir ders günü seçili olmalı.', true); render(); return; }
+    S.school.days = Array.from(s).sort((a, b) => a - b); S.school.courseDays = Array.from(c).sort((a, b) => a - b);
+    commit();
   } else if (ds.ui) { ui[ds.ui] = t.value; ui.sel = null; render(); }
   else if (ds.gh) { const g = ghCfg(); g[ds.gh] = t.value.trim(); localStorage.setItem(GHKEY, JSON.stringify(g)); }
   else if (t.id === 'file' && t.files[0]) {
