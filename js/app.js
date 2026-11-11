@@ -46,6 +46,8 @@ const get = (n, id) => coll(n).find(x => x.id === id);
 const nm = x => x ? (x.short || x.name || '?') : '?';
 const names = (n, ids, full) => ids.map(id => { const x = get(n, id); return x ? (full ? x.name : nm(x)) : '?'; }).join(', ');
 
+/** k. dersten sonraki teneffüs süresi: devreye özel süre girilmişse o, yoksa devrenin genel süresi. */
+const breakOf = (sh, k) => sh.breaks && sh.breaks[k] != null ? sh.breaks[k] : sh.breakMin;
 function periods() {
   const out = [];
   S.school.shifts.forEach((sh, si) => {
@@ -53,7 +55,7 @@ function periods() {
     for (let k = 0; k < sh.periods; k++) {
       let lunchBefore = false;
       if (k > 0) {
-        if (sh.lunchAfter === k && sh.lunchMin > 0) { t += sh.lunchMin; lunchBefore = true; } else t += sh.breakMin;
+        if (sh.lunchAfter === k && sh.lunchMin > 0) { t += sh.lunchMin; lunchBefore = true; } else t += breakOf(sh, k);
       }
       out.push({ idx: out.length, shiftId: sh.id, si, no: k + 1, start: t, end: t + sh.lessonMin, lunchBefore });
       t += sh.lessonMin;
@@ -203,8 +205,18 @@ function zil() {
   const P = periods();
   return `<div class="zil">${S.school.shifts.map(sh => {
     const ps = P.filter(p => p.shiftId === sh.id);
-    return `<div><b>${esc(sh.name)}</b><ol>${ps.map((p, i) => (p.lunchBefore ? `<li class="lunch">Öğle arası ${fmt(ps[i - 1].end)}–${fmt(p.start)}</li>` : '') + `<li>${p.no}. ders <span>${fmt(p.start)}–${fmt(p.end)}</span></li>`).join('')}</ol></div>`;
+    return `<div><b>${esc(sh.name)}</b><ol>${ps.map((p, i) => (p.lunchBefore ? `<li class="lunch">Öğle arası <span data-lt="${p.idx}">${fmt(ps[i - 1].end)}–${fmt(p.start)}</span></li>`
+      : i ? `<li class="brk">teneffüs <span><input type="number" min="0" data-brk="${sh.id}:${i}" value="${breakOf(sh, i)}" class="${sh.breaks && sh.breaks[i] != null ? 'own' : ''}" aria-label="${i}. dersten sonraki teneffüs, dakika"> dk</span></li>` : '')
+      + `<li>${p.no}. ders <span data-pt="${p.idx}">${fmt(p.start)}–${fmt(p.end)}</span></li>`).join('')}</ol></div>`;
   }).join('')}</div>` + warnBox();
+}
+/** Zil çizelgesindeki saatleri, kutuları yeniden çizmeden günceller (yazarken odak kaybolmasın). */
+function refreshTimes() {
+  const P = periods();
+  P.forEach((p, i) => {
+    const s = $(`[data-pt="${p.idx}"]`); if (s) s.textContent = fmt(p.start) + '–' + fmt(p.end);
+    const l = $(`[data-lt="${p.idx}"]`); if (l && i) l.textContent = fmt(P[i - 1].end) + '–' + fmt(p.start);
+  });
 }
 const warnBox = () => { const w = warnings(); return w.length ? `<div class="warn">${w.map(x => `<div>⚠ ${esc(x)}</div>`).join('')}</div>` : ''; };
 
@@ -225,6 +237,7 @@ function vOkul() {
       ${num(s, 'periods', 1)}${num(s, 'lessonMin', 10)}${num(s, 'breakMin', 0)}${num(s, 'lunchAfter', 0, 90)}${num(s, 'lunchMin', 0)}
       <td>${sc.shifts.length > 1 ? `<button class="x" data-act="delShift" data-id="${s.id}" title="Devreyi sil">✕</button>` : ''}</td></tr>`).join('')}</table>
     <button data-act="addShift">+ Devre ekle</button>
+    <h4>Zil çizelgesi</h4><p class="hint">Bir teneffüsü ötekilerden uzun ya da kısa yapmak için aşağıdaki kutuya süresini yazın; değiştirdikleriniz koyu çerçeveli görünür. Kutuyu boşaltırsanız yukarıdaki genel teneffüs süresine döner.</p>
     <div id="zil">${zil()}</div></section>`;
 }
 
@@ -636,6 +649,13 @@ document.addEventListener('change', e => {
       if (f === 'name' && !o.short && ds.coll !== 'classes' && ds.coll !== 'rooms') { o.short = autoShort(ds.coll, v); const s = $(`input[data-coll="${ds.coll}"][data-id="${ds.id}"][data-f="short"]`); if (s) s.value = o.short; }
       commit(false);
     }
+  } else if (ds.brk) {
+    const [sid, k] = ds.brk.split(':'), sh = get('shifts', sid); if (!sh) return;
+    const v = t.value === '' ? sh.breakMin : Math.max(0, parseInt(t.value, 10) || 0);
+    sh.breaks = sh.breaks || {};
+    if (v === sh.breakMin) delete sh.breaks[k]; else sh.breaks[k] = v;
+    t.value = v; t.classList.toggle('own', v !== sh.breakMin);
+    commit(false); refreshTimes();
   } else if (ds.chg) { S.school[ds.chg] = t.value.trim(); commit(false); }
   else if (ds.day != null) {
     const d = +ds.day, s = new Set(S.school.days);

@@ -62,6 +62,9 @@ details { margin-top: 10px; } summary { cursor: pointer; color: var(--accent); }
 .zil { display: flex; flex-wrap: wrap; gap: 28px; margin-top: 14px; }
 .zil ol { list-style: none; padding: 0; margin: 6px 0 0; }
 .zil li { display: flex; justify-content: space-between; gap: 24px; padding: 2px 0; font-variant-numeric: tabular-nums; }
+.zil li.brk { color: var(--mute); font-size: 12.5px; align-items: center; padding-left: 14px; }
+.zil li.brk input { width: 54px; padding: 2px 5px; text-align: right; }
+.zil li.brk input.own { border-color: var(--ink); border-width: 2px; font-weight: 600; color: var(--ink); }
 .zil li.lunch { color: var(--warn-ink); font-style: italic; }
 .warn { background: var(--warn-bg); color: var(--warn-ink); border-radius: 8px; padding: 8px 12px; margin: 10px 0; font-size: 13px; }
 

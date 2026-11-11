@@ -4,7 +4,7 @@ Okullar için haftalık ders programı hazırlama uygulaması. Sunucu gerektirme
 
 ## Özellikler
 
-- **Öğretim şekilleri:** tam gün (öğle aralı), ikili öğretim (sabahçı–öğlenci), yalnız sabah, yalnız öğleden sonra. Devre sayısı, ders sayısı, ders ve teneffüs süreleri, öğle arası ve ders günleri serbestçe değiştirilir.
+- **Öğretim şekilleri:** tam gün (öğle aralı), ikili öğretim (sabahçı–öğlenci), yalnız sabah, yalnız öğleden sonra. Devre sayısı, ders sayısı, ders ve teneffüs süreleri, öğle arası ve ders günleri serbestçe değiştirilir; her teneffüse ayrı süre verilebilir.
 - **Ders türleri:** blok dersler (ör. 2+2+1), birleştirilmiş sınıflar, birden çok öğretmenli dersler, özel derslik isteyen dersler (laboratuvar, spor salonu).
 - **Kısıtlar:** öğretmen, sınıf ve derslik için kapalı saatler; öğretmene günlük en çok ders saati.
 - **Otomatik yerleştirme:** çakışmasız yerleştirir, sınıf ve öğretmen boş saatlerini azaltır; kilitlenen dersler yerinde kalır.
