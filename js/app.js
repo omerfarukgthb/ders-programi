@@ -30,6 +30,7 @@ function migrate(s) {
   const b = blank('tamgun');
   for (const k in b) if (s[k] == null) s[k] = b[k];
   for (const k in b.school) if (s.school[k] == null) s.school[k] = b.school[k];
+  s.started = !!(s.started || s.school.name || s.subjects.length || s.teachers.length || s.classes.length);
   return s;
 }
 
@@ -154,8 +155,9 @@ const hoursOf = (field, id) => sum(S.assignments.filter(a => field === 'roomId' 
 const capacity = c => { const sh = get('shifts', c.shiftId); return sh ? sh.periods * S.school.days.length : 0; };
 function dropPlacements(aid) { for (const k in S.placements) if (k.startsWith(aid + ':')) delete S.placements[k]; }
 
-function commit(rerender = true) {
+function commit(rerender = true, clean = false) {
   prune();
+  if (!clean) S.dirty = true;
   S.updated = new Date().toISOString();
   const j = JSON.stringify(S);
   if (j !== lastJSON) { undo.push(lastJSON); if (undo.length > 40) undo.shift(); }
@@ -188,14 +190,73 @@ function warnings() {
 }
 
 // ---------- çizim ----------
+// Kurulum adımları: sekmeler bu sırayla numaralanır, her sayfanın başındaki yönlendirme buradan gelir.
+const STEPS = [
+  { k: 'okul', t: 'Okul', q: 'Okulun adını yazın, öğretim şeklini seçin ve ders saatlerini okulunuza göre ayarlayın.', tip: 'Öğretim şeklini sonradan değiştirmek yerleştirilmiş programı siler; önce bunu kesinleştirin.' },
+  { k: 'dersler', t: 'Dersler', q: 'Okulda okutulan dersleri ekleyin.', tip: 'Kısa ad çizelgedeki kutularda görünür; 3–4 harf yeterlidir.' },
+  { k: 'ogretmenler', t: 'Öğretmenler', q: 'Öğretmenleri ekleyin; izin günlerini ve gelemedikleri saatleri "Kapalı saatler" ile işaretleyin.', tip: 'Her öğretmeni bir kez ekleyin. Birden çok derse giren öğretmen için ayrı kayıt gerekmez; dersleri Ders Dağıtımı adımında seçilir.' },
+  { k: 'siniflar', t: 'Sınıflar', q: 'Şubeleri ekleyin.', tip: 'İkili öğretimde her sınıfın devresini (sabahçı / öğlenci) seçmeyi unutmayın.' },
+  { k: 'derslikler', t: 'Derslikler', opt: true, q: 'Birden çok sınıfın sırayla kullandığı özel yerleri ekleyin: laboratuvar, spor salonu, atölye.', tip: 'Her sınıfın kendi dersliği için kayıt gerekmez. Paylaşılan özel yeriniz yoksa bu adımı atlayın.' },
+  { k: 'dagitim', t: 'Ders Dağıtımı', q: 'Hangi sınıfın hangi dersini kimin, haftada kaç saat okutacağını girin.', tip: 'Bir sınıfın haftalık toplam saati programdaki yerden fazla olamaz; fazla olursa burada uyarı görünür.' },
+  { k: 'program', t: 'Program', q: 'Dersleri çizelgeye yerleştirin: otomatik yerleştirin, sonra gerekirse elle düzeltin.', tip: 'Yeri belli olan dersleri önce elle koyup kilitleyin (🔓), sonra "Otomatik yerleştir"e basın; kilitli dersler yerinde kalır.' },
+  { k: 'cikti', t: 'Çıktı', last: true, q: 'Sınıf, öğretmen ve derslik programlarını ya da çarşaf programı yazdırın; Excel için indirin.', tip: 'Program bittiğinde Yedek sekmesinden yedek almayı unutmayın; veriler yalnızca bu tarayıcıda durur.' },
+];
+const hasData = () => !!(S.school.name || S.subjects.length || S.teachers.length || S.classes.length);
+const needsBackup = () => hasData() && (S.dirty || !S.lastBackup);
+function stepState() {
+  const us = units(), total = sum(us.map(u => u.len)), placed = sum(us.filter(u => S.placements[u.key]).map(u => u.len)), P = periods();
+  return {
+    okul: { done: !!S.school.name, txt: `${S.school.shifts.length} devre, günde ${P.length} ders saati, haftada ${S.school.days.length} gün`, miss: 'Okul adını yazın.' },
+    dersler: { done: S.subjects.some(x => x.name), txt: S.subjects.length + ' ders tanımlı', miss: 'En az bir ders ekleyin.' },
+    ogretmenler: { done: S.teachers.some(x => x.name), txt: S.teachers.length + ' öğretmen tanımlı', miss: 'En az bir öğretmen ekleyin.' },
+    siniflar: { done: S.classes.some(x => x.name), txt: S.classes.length + ' sınıf tanımlı', miss: 'En az bir sınıf ekleyin.' },
+    derslikler: { done: S.rooms.length > 0, txt: S.rooms.length + ' derslik tanımlı' },
+    dagitim: { done: S.assignments.length > 0, txt: `${S.assignments.length} ders, toplam ${total} saat dağıtıldı`, miss: '"+ Ders ekle" ile dersleri sınıflara ve öğretmenlere dağıtın.' },
+    program: { done: total > 0 && placed === total, txt: `${total} ders saatinin hepsi yerleşti`, miss: total ? `${total - placed} ders saati yerleşmeyi bekliyor; "Otomatik yerleştir"e basın.` : 'Önce ders dağıtımını girin.' },
+    cikti: { done: false },
+  };
+}
+function guideHtml(st) {
+  if (!S.started) return '';
+  if (ui.tab === 'yedek') {
+    const nb = needsBackup();
+    return `<div class="guide ${nb ? 'todo' : 'done'}"><div class="g-main"><h1>Yedek</h1><p class="g-status">${nb ? '● Yedeklenmemiş değişiklik var. Veriler yalnızca bu tarayıcıda duruyor; aşağıdan yedek alın.' : hasData() ? '✓ Veriler yedekli.' : 'Henüz yedeklenecek veri yok.'}</p></div></div>`;
+  }
+  const i = STEPS.findIndex(s => s.k === ui.tab), s = STEPS[i], x = st[s.k], prev = STEPS[i - 1], next = STEPS[i + 1];
+  const status = s.last ? '' : x.done ? '✓ ' + x.txt : s.opt ? 'Bu adım isteğe bağlı; atlayabilirsiniz.' : '● Eksik: ' + x.miss;
+  return `<div class="guide ${x.done ? 'done' : s.opt || s.last ? '' : 'todo'}">
+    <div class="g-main"><div class="g-step">Adım ${i + 1} / ${STEPS.length}${s.opt ? ' · isteğe bağlı' : ''}</div><h1>${s.t}</h1><p>${s.q}</p>
+      ${status ? `<p class="g-status">${esc(status)}</p>` : ''}<p class="g-tip"><b>Önemli</b>${s.tip}</p></div>
+    <div class="g-nav">${prev ? `<a class="btn" href="#${prev.k}">‹ Geri</a>` : ''}${next ? `<a class="btn ${x.done || s.opt ? 'primary' : ''}" href="#${next.k}">${s.opt && !x.done ? 'Atla' : 'Sonraki'}: ${next.t} ›</a>` : `<a class="btn primary" href="#yedek">Yedek al ›</a>`}</div></div>`;
+}
 function header() {
   $('#schoolName').textContent = S.school.name ? '· ' + S.school.name : '';
   $('#saveState').textContent = S.updated ? 'Kaydedildi ' + new Date(S.updated).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : '';
   $('#undoBtn').disabled = !undo.length;
+  document.body.classList.toggle('fresh', !S.started);
+  if (!S.started) { $('#progress').innerHTML = $('#tabs').innerHTML = $('#guide').innerHTML = ''; return; }
+  const st = stepState(), req = STEPS.filter(s => !s.opt && !s.last), nd = req.filter(s => st[s.k].done).length;
+  const todo = req.find(s => !st[s.k].done);
+  $('#progress').innerHTML = `Kurulum ${nd} / ${req.length}<i><b style="width:${nd / req.length * 100}%"></b></i>`;
+  $('#tabs').innerHTML = STEPS.map((s, i) => `<a href="#${s.k}" class="${ui.tab === s.k ? 'on' : ''} ${st[s.k].done ? 'done' : ''} ${todo && todo.k === s.k ? 'todo' : ''}" ${todo && todo.k === s.k ? 'title="Sıradaki adım"' : ''}><span class="num">${st[s.k].done ? '✓' : i + 1}</span>${s.t}</a>`).join('')
+    + `<span class="grow"></span><a href="#yedek" class="${ui.tab === 'yedek' ? 'on' : ''}">Yedek${needsBackup() ? '<span class="dirty" title="Yedeklenmemiş değişiklik var"></span>' : ''}</a>`;
+  $('#guide').innerHTML = guideHtml(st);
 }
+function vWelcome() {
+  return `<section class="welcome"><h1>Ders programınızı üç aşamada hazırlayın</h1>
+    <p class="lead">Program sizi adım adım yönlendirir. Verileriniz bu tarayıcıda kalır; istediğiniz zaman ara verip kaldığınız yerden sürdürebilirsiniz.</p>
+    <div class="phases">
+      <div><span>1</span><b>Tanımlayın</b><p>Okulun öğretim şeklini, derslerini, öğretmenlerini ve sınıflarını girin.</p></div>
+      <div><span>2</span><b>Dağıtın</b><p>Hangi sınıfın hangi dersini kimin, haftada kaç saat okutacağını belirtin.</p></div>
+      <div><span>3</span><b>Yerleştirin</b><p>Program dersleri çakışmadan yerleştirir; siz düzeltir ve yazdırırsınız.</p></div>
+    </div>
+    <div class="row center"><button class="primary big" data-act="start">Kuruluma başla</button><button class="big" data-act="startSample">Önce örnek okulla dene</button></div>
+    <p class="hint center"><a href="#" data-act="startRestore">Daha önce aldığım yedeği geri yükleyeceğim</a></p></section>`;
+}
+function go(tab) { ui.tab = tab; ui.sel = null; if (location.hash === '#' + tab) render(); else location.hash = tab; }
 function render() {
   header();
-  $('#tabs').innerHTML = TABS.map(([k, l]) => `<a href="#${k}" class="${ui.tab === k ? 'on' : ''}">${l}</a>`).join('');
+  if (!S.started) { $('#view').innerHTML = vWelcome(); return; }
   const V = { okul: vOkul, dersler: vDersler, ogretmenler: vOgretmenler, siniflar: vSiniflar, derslikler: vDerslikler, dagitim: vDagitim, program: vProgram, cikti: vCikti, yedek: vYedek };
   $('#view').innerHTML = V[ui.tab]();
   if (ui.tab === 'program' && ui.sel) markCells(ui.sel);
@@ -472,9 +533,10 @@ async function ghSave() {
   const msg = $('#ghMsg'); msg.textContent = 'Yedekleniyor…';
   try {
     const cur = await ghCall('GET');
-    S.lastBackup = new Date().toISOString();
-    await ghCall('PUT', { message: 'Yedek ' + new Date().toLocaleString('tr-TR'), content: b64e(JSON.stringify(S, null, 1)), sha: cur ? cur.sha : undefined });
-    commit(); toast('GitHub\'a yedeklendi.');
+    const copy = Object.assign({}, S, { lastBackup: new Date().toISOString(), dirty: false });
+    await ghCall('PUT', { message: 'Yedek ' + new Date().toLocaleString('tr-TR'), content: b64e(JSON.stringify(copy, null, 1)), sha: cur ? cur.sha : undefined });
+    S.lastBackup = copy.lastBackup; S.dirty = false;
+    commit(true, true); toast('GitHub\'a yedeklendi.');
   } catch (e) { msg.textContent = ''; toast(e.message, true); }
 }
 async function ghLoad() {
@@ -482,7 +544,7 @@ async function ghLoad() {
   try {
     const t = await ghCall('GET', null, true);
     if (t == null) throw new Error('Depoda yedek dosyası bulunamadı.');
-    S = migrate(JSON.parse(t)); commit(); toast('Yedek geri yüklendi.');
+    S = migrate(JSON.parse(t)); S.dirty = false; commit(true, true); toast('Yedek geri yüklendi.');
   } catch (e) { toast(e.message, true); }
 }
 
@@ -502,7 +564,7 @@ function loadSample() {
     for (let k = 0; k < nT; k++) { const n = ad[ti++ % ad.length]; const t = { id: uid(), name: n, short: n.split(' ').map(w => w[0]).join(''), branch: name, maxDaily: 0 }; b.teachers.push(t); ts.push(t); }
     b.classes.forEach((c, ci) => b.assignments.push({ id: uid(), subjectId: s.id, classIds: [c.id], teacherIds: [ts[ci % ts.length].id], hours, blocks, roomId: short === 'BED' ? b.rooms[0].id : short === 'BİL' ? b.rooms[1].id : '' }));
   });
-  S = b; ui.ent = ''; commit(); toast('Örnek veri yüklendi. Program sekmesinde "Otomatik yerleştir"e basın.');
+  b.started = true; S = b; ui.ent = ''; commit(); toast('Örnek veri yüklendi. Program sekmesinde "Otomatik yerleştir"e basın.');
 }
 
 // ---------- pencereler ----------
@@ -615,11 +677,18 @@ const A = {
   print() { window.print(); },
   csv: csvOut,
   ghSave, ghLoad,
-  jsonSave() { download('ders-programi-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(S, null, 1)); },
+  jsonSave() {
+    S.lastBackup = new Date().toISOString(); S.dirty = false;
+    download('ders-programi-' + new Date().toISOString().slice(0, 10) + '.json', JSON.stringify(S, null, 1));
+    commit(true, true);
+  },
+  start() { S.started = true; ui.tab = 'okul'; commit(); go('okul'); },
+  startSample() { loadSample(); go('program'); },
+  startRestore() { S.started = true; commit(false, true); go('yedek'); },
   jsonLoad() { $('#file').click(); },
   sample() { if ((S.assignments.length || S.teachers.length) && !confirm('Var olan veriler örnek veriyle değiştirilecek. Sürdürülsün mü?')) return; loadSample(); },
   wipe() { if (confirm('Bütün okul verisi bu tarayıcıdan silinecek. Emin misiniz?')) { S = blank('tamgun'); commit(); } },
-  undo() { if (!undo.length) return; lastJSON = undo.pop(); S = JSON.parse(lastJSON); localStorage.setItem(KEY, lastJSON); ui.sel = null; render(); },
+  undo() { if (!undo.length) return; lastJSON = undo.pop(); S = JSON.parse(lastJSON); S.dirty = true; lastJSON = JSON.stringify(S); localStorage.setItem(KEY, lastJSON); ui.sel = null; render(); },
 };
 function autoShort(n, name) {
   if (n === 'teachers') return name.split(/\s+/).map(w => w[0] || '').join('').toLocaleUpperCase('tr');
@@ -629,7 +698,7 @@ function autoShort(n, name) {
 // ---------- olaylar ----------
 document.addEventListener('click', e => {
   const a = e.target.closest('[data-act]');
-  if (a) { if (A[a.dataset.act]) A[a.dataset.act](a, e); return; }
+  if (a) { if (a.tagName === 'A') e.preventDefault(); if (A[a.dataset.act]) A[a.dataset.act](a, e); return; }
   if (ui.tab !== 'program') return;
   const c = e.target.closest('.card');
   if (c) { ui.sel = ui.sel === c.dataset.u ? null : c.dataset.u; render(); return; }
@@ -668,7 +737,7 @@ document.addEventListener('change', e => {
     t.files[0].text().then(txt => {
       const j = JSON.parse(txt);
       if (!j.school || !Array.isArray(j.assignments)) throw new Error('x');
-      S = migrate(j); commit(); toast('Yedek dosyası yüklendi.');
+      S = migrate(j); S.dirty = false; commit(true, true); toast('Yedek dosyası yüklendi.');
     }).catch(() => toast('Bu dosya geçerli bir yedek değil.', true));
   }
 });
