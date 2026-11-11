@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Ders Programı</title>
+<meta name="theme-color" content="#16233b">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -11,6 +15,7 @@
   <div class="brand">Ders Programı <span id="schoolName"></span></div>
   <span id="progress"></span>
   <span id="saveState"></span>
+  <button id="installBtn" data-act="install" hidden title="Uygulamayı bu cihaza kurar; internet olmadan da açılır">Cihaza kur</button>
   <button id="undoBtn" data-act="undo" title="Ctrl+Z">Geri al</button>
 </header>
 <nav id="tabs" class="noprint"></nav>

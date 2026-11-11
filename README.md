@@ -11,6 +11,7 @@ Okullar için haftalık ders programı hazırlama uygulaması. Sunucu gerektirme
 - **Otomatik yerleştirme:** çakışmasız yerleştirir, sınıf ve öğretmen boş saatlerini azaltır; kilitlenen dersler yerinde kalır.
 - **Elle düzenleme:** sürükle-bırak ya da tıkla-yerleştir; uygun saatler yeşil, uygun olmayanlar nedeni ile birlikte kırmızı görünür.
 - **Çıktı:** sınıf, öğretmen ve derslik programları, çarşaf program; yazdırma/PDF ve Excel için CSV.
+- **Kurulabilir ve çevrimdışı (PWA):** sayfa bir kez açıldıktan sonra internetsiz çalışır; bilgisayara ve telefona uygulama olarak kurulabilir. Telefon ekranına uyumludur.
 - **Yedek:** veriler tarayıcıda saklanır; tek tuşla gizli bir GitHub deposuna ya da dosyaya yedeklenir.
 
 ## Kullanım sırası

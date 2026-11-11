@@ -285,6 +285,7 @@ function render() {
   const V = { okul: vOkul, dersler: vDersler, ogretmenler: vOgretmenler, siniflar: vSiniflar, derslikler: vDerslikler, dagitim: vDagitim, program: vProgram, cikti: vCikti, yedek: vYedek };
   $('#view').innerHTML = V[ui.tab]();
   if (ui.tab === 'program' && ui.sel) markCells(ui.sel);
+  const on = $('#tabs a.on'); if (on && on.scrollIntoView) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 function zil() {
@@ -399,7 +400,7 @@ function vProgram() {
   if (!ent) return h + `<section class="panel"><p class="empty">Bu görünümde gösterilecek kayıt yok. Önce tanımları ve ders dağıtımını girin.</p></section>`;
   const P = periods(), vis = visP(P, ui.view === 'c' ? ent.shiftId : ''), days = allDays();
   const mine = entUnits(us, ui.view, ent.id), rowOf = {};
-  let r = 1, g = `<div class="grid" style="grid-template-columns:84px repeat(${days.length},minmax(96px,1fr))"><div class="gh" style="grid-row:1;grid-column:1"></div>` + days.map((d, i) => `<div class="gh ${isCDay(d) ? 'kd' : ''}" style="grid-row:1;grid-column:${i + 2}">${DAYS[d]}${isCDay(d) ? ' <small>kurs</small>' : ''}</div>`).join('');
+  let r = 1, g = `<div class="grid" style="--nd:${days.length}"><div class="gh" style="grid-row:1;grid-column:1"></div>` + days.map((d, i) => `<div class="gh ${isCDay(d) ? 'kd' : ''}" style="grid-row:1;grid-column:${i + 2}"><span class="dfull">${DAYS[d]}</span><span class="dshort">${DSHORT[d]}</span>${isCDay(d) ? ' <small>kurs</small>' : ''}</div>`).join('');
   vis.forEach((p, i) => {
     const prev = vis[i - 1];
     if (prev && (p.shiftId !== prev.shiftId || (p.lunchBefore && p.okN))) { r++; g += `<div class="sep" style="grid-row:${r};grid-column:1/-1">${p.shiftId !== prev.shiftId ? esc(get('shifts', p.shiftId).name) + ' devresi' : 'Öğle arası ' + fmt(prev.end) + '–' + fmt(p.start)}</div>`; }
@@ -422,6 +423,10 @@ function vProgram() {
   let gap = 0; const occ = buildOcc()[ui.view][ent.id] || {};
   for (const d in perDay) { const lo = Math.min(...perDay[d]), hi = Math.max(...perDay[d]); for (let p = lo; p <= hi; p++) if (!occ[d + '-' + p]) gap++; }
   const pool = mine.filter(u => !S.placements[u.key]);
+  // Seçili ders için eylem çubuğu: dokunmatik ekranda kutudaki küçük simgelerin yerini tutar
+  const su = ui.sel && us.find(u => u.key === ui.sel), sp = su && S.placements[su.key];
+  if (su) h += `<div class="selbar"><span><b>${esc(nm(get('subjects', su.a.subjectId)))}</b> ${esc(names('classes', su.a.classIds, true))} seçili. Yeşil bir saate dokunun.</span>
+    ${sp ? `<button data-act="selLock">${sp.locked ? 'Kilidi aç' : 'Kilitle'}</button><button data-act="selUnplace">Programdan çıkar</button>` : ''}<button data-act="selCancel">Vazgeç</button></div>`;
   return h + `<div class="prog"><div class="scroll">${g}<p class="hint">${esc(ent.name)}: ${hrs} saat yerleşti, arada ${gap} boş saat. Dersi sürükleyin ya da tıklayıp hedef saate tıklayın; yeşil saatler uygundur. Kilitli dersler otomatik yerleştirmede yerinde kalır. Esc seçimi bırakır.</p></div>
     <aside class="pool" data-drop="pool"><h3>Yerleşmemiş dersler <small>${sum(pool.map(u => u.len))} saat</small></h3>${pool.map(u => card(u)).join('') || '<p class="empty">Hepsi yerleşti.</p>'}</aside></div>`;
 }
@@ -558,6 +563,10 @@ function vYedek() {
     <p class="hint">Belirteç yalnızca bu tarayıcıda saklanır, yedek dosyasına yazılmaz. GitHub → Settings → Developer settings → Fine-grained tokens yolundan, yalnız yedek deposuna "Contents: Read and write" izni vererek oluşturun.</p>
     <div class="row"><button class="primary" data-act="ghSave">GitHub'a yedekle</button><button data-act="ghLoad">GitHub'dan geri yükle</button><span id="ghMsg" class="hint">${S.lastBackup ? 'Son yedek: ' + new Date(S.lastBackup).toLocaleString('tr-TR') : ''}</span></div></section>
   <section class="panel"><h2>Dosya olarak yedek</h2><div class="row"><button data-act="jsonSave">Yedek dosyası indir</button><button data-act="jsonLoad">Yedek dosyası yükle</button><input type="file" id="file" accept=".json,application/json" hidden></div></section>
+  <section class="panel"><h2>Cihaza kurma ve internetsiz kullanım</h2>
+    <p class="hint">Bu sayfayı bir kez açtıktan sonra program internet olmadan da açılır; veriler zaten bu cihazda durur. Yalnızca GitHub yedeği internet ister.</p>
+    <p class="hint"><b>Bilgisayar (Chrome, Edge):</b> üstteki "Cihaza kur" düğmesi ya da adres çubuğundaki kur simgesi. <b>Android:</b> tarayıcı menüsü → "Uygulamayı yükle" / "Ana ekrana ekle". <b>iPhone, iPad (Safari):</b> Paylaş → "Ana Ekrana Ekle".</p>
+    <p class="hint">Her cihazın verisi ayrıdır. Bilgisayarda hazırladığınız programı telefonda görmek için burada yedekleyip telefonda geri yükleyin.</p></section>
   <section class="panel"><h2>Örnek ve sıfırlama</h2><p class="hint">Örnek veri, seçili öğretim şekline göre 8 şubeli bir ortaokul kurar; programı denemek için kullanın.</p>
     <div class="row"><button data-act="sample">Örnek veri yükle</button><button class="danger" data-act="wipe">Bütün veriyi sil</button></div></section>`;
 }
@@ -567,6 +576,7 @@ async function ghCall(method, body, raw) {
   if (!g.owner || !g.repo || !g.token || !g.path) throw new Error('Kullanıcı adı, depo, dosya adı ve belirteç alanlarını doldurun.');
   const url = `https://api.github.com/repos/${encodeURIComponent(g.owner)}/${encodeURIComponent(g.repo)}/contents/${g.path.split('/').map(encodeURIComponent).join('/')}` + (method === 'GET' && g.branch ? '?ref=' + encodeURIComponent(g.branch) : '');
   if (body && g.branch) body.branch = g.branch;
+  if (!navigator.onLine) throw new Error('İnternet bağlantısı yok. GitHub yedeği için bağlantı gerekir; dosya olarak yedek alabilirsiniz.');
   const r = await fetch(url, { method, cache: 'no-store', headers: { Authorization: 'Bearer ' + g.token, Accept: raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }, body: body ? JSON.stringify(body) : undefined });
   if (r.status === 404 && method === 'GET') return null;
   if (r.status === 401) throw new Error('Belirteç geçersiz ya da süresi dolmuş.');
@@ -810,5 +820,14 @@ document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) { e.preventDefault(); A.undo(); }
 });
 $('#dlg').addEventListener('cancel', () => { ui.un = null; setTimeout(render, 0); });
+// Kurulabilir uygulama (PWA): çevrimdışı önbellek ve "Cihaza kur" düğmesi
+let installEvt = null;
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('#installBtn').hidden = false; });
+window.addEventListener('appinstalled', () => { installEvt = null; $('#installBtn').hidden = true; toast('Uygulama cihaza kuruldu.'); });
+A.install = () => { if (installEvt) { installEvt.prompt(); installEvt = null; $('#installBtn').hidden = true; } };
+A.selLock = () => { const pl = S.placements[ui.sel]; if (pl) { pl.locked = !pl.locked; commit(); } };
+A.selUnplace = () => { delete S.placements[ui.sel]; ui.sel = null; commit(); };
+A.selCancel = () => { ui.sel = null; render(); };
 window.addEventListener('hashchange', () => { const t = location.hash.slice(1); if (TABS.some(x => x[0] === t)) { ui.tab = t; ui.sel = null; render(); window.scrollTo(0, 0); } });
 render();
