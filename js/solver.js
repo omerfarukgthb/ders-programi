@@ -52,7 +52,8 @@
           for (let k = 0; k < l.len && good; k++) {
             const pp = P.periods[p + k], s = d * N + p + k;
             if (sh >= 0 && pp.shift !== sh) good = false;
-            else if (k > 0 && (pp.shift !== P.periods[p].shift || pp.lunchBefore)) good = false;
+            else if ((l.kurs ? pp.okC : pp.okN) === false) good = false; // o gün türünde bu ders saati yok
+            else if (k > 0 && (pp.shift !== P.periods[p].shift || (l.kurs ? pp.lunchC : pp.lunchBefore))) good = false;
             else {
               for (const c of l.classes) if (P.classes[c].un[s]) good = false;
               for (const t of l.teachers) if (P.teachers[t].un[s]) good = false;
